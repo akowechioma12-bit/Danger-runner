@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Adventure Mode</title>
+<style>
+  :root { --bg:#7fb7d5; --ground:#0b6b4b; --hud:#fff; }
+  html,body { height:100%; margin:0; background:#0b1020; font-family:system-ui,Segoe UI,Roboto,Arial; -webkit-tap-highlight-color: transparent; }
+  .wrap { display:flex; align-items:center; justify-content:center; height:100vh; }
+  canvas { background: var(--bg); border-radius:10px; display:block; touch-action:none; max-width:420px; width:92vw; height:82vh; }
+  #hud {
+    position:fixed; top:12px; left:12px; color:var(--hud); font-weight:700; text-shadow:0 1px 0 rgba(0,0,0,0.5);
+    z-index:10; user-select:none;
+  }
+  #msg { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); color:white; background:rgba(0,0,0,0.55);
+         padding:12px 18px; border-radius:10px; display:none; font-weight:700; z-index:11; }
+</style>
+</head>
+<body>
+<div id="hud">Score: <span id="score">0</span> · High: <span id="high">0</span></div>
+<div id="msg">Game Over — Tap to Restart</div>
+
+<!-- Place background.mp3 in same folder; change filename here if needed -->
+<audio id="bgSound" src="background.mp3" loop preload="auto"></audio>
+
+<div class="wrap">
+  <canvas id="game" aria-label="Adventure mode runner"></canvas>
+</div>
+
+<script>
+(() => {
+  // ---------- Canvas + sizing ----------
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  function fitCanvas() {
+    // keep aspect ~ 350x650 scaled to available area
+    const w = Math.min(420, window.innerWidth * 0.92);
+    const h = Math.min(780, window.innerHeight * 0.82);
+    canvas.width = Math.round(w);
+    canvas.height = Math.round(h);
+  }
+  fitCanvas();
+  window.addEventListener('resize', fitCanvas);
+
+  // ---------- Config ----------
+  const GROUND_H = 60;
+  const GRAVITY = 0.75;
+  const JUMP_POWER = -16;
+  const PLAYER_IMG_SRC = 'player.png'; // optional; fallback to emoji
+  const PLAYER_EMOJI = '🧍'; // fallback emoji if adv.png missing
+  const BIRD_EMOJI = '🐦';
+  const SPECIAL_TRIGGER_SCORE = 2000;
+  const SPECIAL_DURATION_MS = 10000; // 10s special bird phase
+  const NORMAL_SCORE_PER_SEC = 60; // normal scoring rate
+  const SPECIAL_SCORE_PER_SEC = NORMAL_SCORE_PER_SEC * 2; // faster during bird phase
+
+  // ---------- Audio ----------
+  const bgSoundEl = document.getElementById('bgSound');
+  bgSoundEl.loop = true;
+  bgSoundEl.preload = 'auto';
+  let audioCtx = null;
+  function ensureAudioCtx() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch(e) { audioCtx = null; }
+    }
+    return audioCtx;
+  }
+  function playSfx(type) {
+    const ac = ensureAudioCtx();
+    if (!ac) return;
+    const t = ac.currentTime;
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    if (type === 'jump') {
+      o.type = 'sine';
+      o.frequency.setValueAtTime(520, t);
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.exponentialRampToValueAtTime(0.14, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      o.connect(g); g.connect(ac.destination);
+      o.start(t); o.stop(t + 0.16);
+    } else if (type === 'hit') {
+      o.type = 'square';
+      o.frequency.setValueAtTime(180, t);
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      o.connect(g); g.connect(ac.destination);
+      o.start(t); o.stop(t + 0.28);
+    }
+  }
+
+  // ---------- Player & assets ----------
+  const playerImg = new Image();
+  let playerImgLoaded = false;
+  playerImg.src = PLAYER_IMG_SRC;
+  playerImg.onload = () => playerImgLoaded = true;
+  playerImg.onerror = () => playerImgLoaded = false;
+
+  const player = {
+    x: Math.round(canvas.width * 0.22),
+    y: 0,
+    w: Math.round(canvas.width * 0.16), // responsive size
+    h: Math.round(canvas.height * 0.12),
+    vy: 0,
+    grounded: true
+  };
+
+  function resetPlayer() {
+    player.x = Math.round(canvas.width * 0.22);
+    player.w = Math.round(canvas.width * 0.16);
+    player.h = Math.round(canvas.height * 0.12);
+    player.y = canvas.height - GROUND_H - player.h;
+    player.vy = 0;
+    player.grounded = true;
+  }
+
+  // ---------- Obstacles ----------
+  let obstacles = [];
+  function spawnObstacle() {
+    const h = Math.round(canvas.height * 0.056); // around 37 px at medium size
+    const w = Math.round(h * (0.85 + Math.random()*1.1));
+    obstacles.push({
+      x: canvas.width + 10 + Math.random() * 80,
+      y: canvas.height - GROUND_H - h,
+      w, h,
+      baseSpeed: 5.5 + Math.random()*1.8
+    });
+  }
+
+  // ---------- Birds (sky) ----------
+  let birds = []; // each: {x,y,w,h,speed}
+  function spawnBirdFromRight() {
+    const y = 40 + Math.random() * Math.max(40, canvas.height * 0.25);
+    const size = Math.round(Math.min(48, canvas.width * 0.08));
+    const speed = 2 + Math.random() * 2; // px per frame (scaled)
+    birds.push({ x: canvas.width + 40, y, w: size, h: size * 0.7, speed });
+  }
+
+  // ---------- Game state ----------
+  let scoreFloat = 0; // fractional score accumulator
+  let score = 0;
+  let alive = true;
+  let lastSpawn = 0;
+  let lastBirdSpawn = 0;
+  let rafId = null;
+  let lastTs = performance.now();
+  const scoreEl = document.getElementById('score');
+  const highEl = document.getElementById('high');
+  const msgEl = document.getElementById('msg');
+  let highScore = Number(localStorage.getItem('runner_high') || 0);
+  highEl.textContent = highScore;
+
+  // Adventure control
+  let specialTriggered = false;
+  let specialActive = false;
+  let specialEndTimestamp = 0;
+  let nextBirdInterval = 0;
+  let unlockedBirdRandom = false; // after special, birds appear randomly sometimes
+
+  // ---------- Difficulty multiplier ----------
+  function difficultyMultiplier() {
+    return 1 + Math.min(2.2, score * 0.0025);
+  }
+
+  // ---------- Drawing ----------
+  function draw() {
+    // clear and sky
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = '#7fb7d5';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // ground strip
+    ctx.fillStyle = '#0b6b4b';
+    ctx.fillRect(0, canvas.height - GROUND_H, canvas.width, GROUND_H);
+
+    // birds (behind player slightly)
+    for (let b of birds) {
+      ctx.font = Math.max(20, b.h) + "px system-ui, 'Segoe UI Emoji'";
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(BIRD_EMOJI, b.x + b.w/2, b.y + b.h/2);
+    }
+
+    // player (image or emoji)
+    if (playerImgLoaded) {
+      ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+    } else {
+      const emoji = PLAYER_EMOJI || '😀';
+      ctx.font = (player.h - 6) + "px system-ui, 'Segoe UI Emoji'";
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(emoji, player.x + player.w/2, player.y + player.h/2 + 2);
+    }
+
+    // obstacles (floor)
+    ctx.fillStyle = '#222';
+    for (let o of obstacles) ctx.fillRect(o.x, o.y, o.w, o.h);
+  }
+
+  // ---------- Collision ----------
+  function collide(a,b) {
+    return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+  }
+
+  // ---------- Jump & restart ----------
+  function jump() {
+    if (!alive) { restart(); return; }
+    if (player.grounded) {
+      player.vy = JUMP_POWER;
+      player.grounded = false;
+      playSfx('jump');
+    }
+  }
+
+  function restart() {
+    scoreFloat = 0; score = 0;
+    alive = true;
+    obstacles = [];
+    birds = [];
+    specialTriggered = false;
+    specialActive = false;
+    unlockedBirdRandom = false;
+    resetPlayer();
+    msgEl.style.display = 'none';
+    scoreEl.textContent = score;
+    if (!rafId) {
+      lastTs = performance.now();
+      lastSpawn = performance.now();
+      lastBirdSpawn = performance.now();
+      rafId = requestAnimationFrame(loop);
+    }
+  }
+
+  // ---------- Main loop ----------
+  function loop(ts) {
+    if (!lastSpawn) lastSpawn = ts;
+    const dt = Math.min(40, ts - lastTs); // ms delta clamped
+    lastTs = ts;
+
+    // trigger special mode at 2000 if not already
+    if (!specialTriggered && score >= SPECIAL_TRIGGER_SCORE) {
+      specialTriggered = true;
+      specialActive = true;
+      unlockedBirdRandom = false;
+      // clear floor obstacles and stop spawning them temporarily
+      obstacles = [];
+      specialEndTimestamp = ts + SPECIAL_DURATION_MS;
+      // during special, spawn birds frequently
+      nextBirdInterval = 400 + Math.random()*600;
+      lastBirdSpawn = ts;
+    }
+
+    // end special mode when time's up
+    if (specialActive && ts >= specialEndTimestamp) {
+      specialActive = false;
+      unlockedBirdRandom = true;
+      // schedule random bird later
+      nextBirdInterval = 3000 + Math.random()*7000;
+      lastBirdSpawn = ts;
+    }
+
+    // spawn floor obstacles only when NOT in special mode
+    if (!specialActive && (ts - lastSpawn > 1100 + Math.random()*600)) {
+      spawnObstacle();
+      lastSpawn = ts;
+    }
+
+    // spawn birds: frequent during special, random after
+    if (ts - lastBirdSpawn > nextBirdInterval) {
+      if (specialActive) {
+        spawnBirdFromRight();
+        lastBirdSpawn = ts;
+        nextBirdInterval = 300 + Math.random()*700;
+      } else if (unlockedBirdRandom) {
+        // sometimes spawn, sometimes not — randomize
+        if (Math.random() < 0.45) spawnBirdFromRight();
+        lastBirdSpawn = ts;
+        nextBirdInterval = 3000 + Math.random()*7000;
+      } else {
+        lastBirdSpawn = ts;
+        nextBirdInterval = 3000 + Math.random()*7000;
+      }
+    }
+
+    // physics: scale with dt to keep consistent across devices
+    const dtScale = dt / 16.6667;
+    player.vy += GRAVITY * dtScale;
+    player.y += player.vy * dtScale;
+
+    // ground collision
+    if (player.y > canvas.height - GROUND_H - player.h) {
+      player.y = canvas.height - GROUND_H - player.h;
+      player.vy = 0;
+      player.grounded = true;
+    }
+
+    // update birds
+    for (let i = birds.length - 1; i >= 0; i--) {
+      const b = birds[i];
+      // bobbing can be added if desired; for now simple linear motion
+      const mult = difficultyMultiplier();
+      b.x -= b.speed * mult * dtScale;
+      if (b.x + b.w < -40) birds.splice(i,1);
+    }
+
+    // update obstacles and check collisions
+    const mult = difficultyMultiplier();
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const o = obstacles[i];
+      o.x -= o.baseSpeed * mult * dtScale;
+
+      if (alive && collide(player, o)) {
+        alive = false;
+        msgEl.style.display = 'block';
+        playSfx('hit');
+        // restart bg only on fail
+        try { bgSoundEl.currentTime = 0; bgSoundEl.play().catch(()=>{}); } catch(e){}
+        if (score > highScore) {
+          highScore = score;
+          try { localStorage.setItem('runner_high', String(highScore)); } catch(e){}
+          highEl.textContent = highScore;
+        }
+      }
+
+      if (o.x + o.w < -40) obstacles.splice(i,1);
+    }
+
+    // scoring: dt-based with special multiplier
+    let ratePerSec = NORMAL_SCORE_PER_SEC;
+    if (specialActive) ratePerSec = SPECIAL_SCORE_PER_SEC;
+    else if (unlockedBirdRandom) ratePerSec = Math.round(NORMAL_SCORE_PER_SEC * 1.15);
+
+    scoreFloat += ratePerSec * (dt/1000);
+    const newScore = Math.floor(scoreFloat);
+    if (newScore !== score) {
+      score = newScore;
+      scoreEl.textContent = specialActive ? ('Adv ' + score) : String(score);
+    }
+
+    draw();
+
+    // schedule next frame (but stop when dead)
+    if (alive) {
+      rafId = requestAnimationFrame(loop);
+    } else {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  }
+
+  // ---------- Input handling ----------
+  function handleTap(e) {
+    e.preventDefault && e.preventDefault();
+    // unlock audio context on first gesture
+    try { ensureAudioCtx() && audioCtx.resume && audioCtx.resume(); } catch(e){}
+    // don't restart bg on normal taps (only restart when failing)
+    // ensure bg plays when first tapped (some mobile require gesture)
+    bgSoundEl.play().catch(()=>{ /* will play after gesture if allowed */ });
+    jump();
+  }
+  function handleMouse(e) {
+    e.preventDefault && e.preventDefault();
+    // same as touch
+    try { ensureAudioCtx() && audioCtx.resume && audioCtx.resume(); } catch(e){}
+    bgSoundEl.play().catch(()=>{});
+    jump();
+  }
+  // separate logic: if dead and tapped we call restart inside jump()
+  canvas.addEventListener('touchstart', handleTap, {passive:false});
+  canvas.addEventListener('mousedown', handleMouse);
+
+  // ---------- Prevent scrolling while playing ----------
+  document.body.addEventListener('touchmove', e => {
+    if (e.target === canvas) e.preventDefault();
+  }, {passive:false});
+
+  // ---------- Visibility (pause/resume) ----------
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      try { bgSoundEl.pause(); } catch(e){}
+    } else {
+      if (alive) {
+        try { bgSoundEl.play().catch(()=>{}); } catch(e){}
+        if (!rafId) { lastTs = performance.now(); rafId = requestAnimationFrame(loop); }
+      }
+    }
+  });
+
+  // ---------- Start game ----------
+  resetPlayer();
+  lastSpawn = performance.now();
+  lastBirdSpawn = performance.now();
+  lastTs = performance.now();
+  rafId = requestAnimationFrame(loop);
+
+  // Try warming up bg music (will be allowed after first gesture)
+  bgSoundEl.play().catch(()=>{});
+
+  // expose debug helpers
+  window.adv = {
+    restart, spawnBirdFromRight, forceSpecial: () => { score = SPECIAL_TRIGGER_SCORE; scoreFloat = SPECIAL_TRIGGER_SCORE; specialTriggered = false; }
+  };
+})();
+</script>
+</body>
+</html>
