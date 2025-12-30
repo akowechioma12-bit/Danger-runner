@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Danger Jump</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+  body {
+    margin: 0;
+    background: #111;
+    color: white;
+    text-align: center;
+    font-family: Arial, sans-serif;
+    user-select: none;
+  }
+
+  h1 {
+    margin-top: 15px;
+    font-size: 32px;
+  }
+
+  canvas {
+    background: #292;
+    display: block;
+    margin: 10px auto;
+    border: 2px solid #255;
+    border-radius: 6px;
+  }
+
+  #gameOverScreen { margin-top: 20px; font-size: 26px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<h1>Danger Jump</h1>
+
+<canvas id="gameCanvas" width="800" height="400"></canvas>
+
+<div id="gameOverScreen" class="hidden">
+  <h2>Game Over — Tap to Restart</h2>
+  <p id="finalScoreText">Score: 0 · High Score: 0</p>
+</div>
+
+<!-- AUDIO FILES -->
+<audio id="jumpSound" src="jump.mp3" preload="auto"></audio>
+<audio id="hitSound" src="hit.mp3" preload="auto"></audio>
+<audio id="scoreSound" src="score.mp3" preload="auto"></audio>
+
+<!-- NEW: BACKGROUND MUSIC -->
+<audio id="bgMusic" src="background.mp3" preload="auto" loop></audio>
+
+<script>
+// CANVAS
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+// UI
+const gameOverScreen = document.getElementById("gameOverScreen");
+const finalScoreText = document.getElementById("finalScoreText");
+
+// IMAGES
+const playerImg = new Image();
+playerImg.src = "player.png";
+
+const obstacleImg = new Image();
+obstacleImg.src = "obstacle.png";
+
+// AUDIO
+const jumpSound = document.getElementById("jumpSound");
+const hitSound  = document.getElementById("hitSound");
+const scoreSound = document.getElementById("scoreSound");
+const bgMusic = document.getElementById("bgMusic");
+
+// GAME DATA
+let player = { x: 50, y: 300, w: 50, h: 50, dy: 0, jumping: false };
+let gravity = 0.5;
+
+let score = 0;
+let highScore = localStorage.getItem("highscore") || 0;
+
+let obstacle = { x: 800, y: 310, w: 40, h: 40 };
+
+let speed = 5; // BASE SPEED
+let difficultyIncrease = 0.003; // SPEED INCREASE RATE
+
+let gameRunning = true;
+
+// JUMP
+function jump() {
+  if (!gameRunning) return restartGame();
+
+  if (!player.jumping) {
+    player.dy = -10;
+    player.jumping = true;
+    jumpSound.play();
+
+    // Start background music on first tap (mobile rule)
+    bgMusic.play().catch(()=>{});
+  }
+}
+
+// INPUT
+document.addEventListener("keydown", jump);
+document.addEventListener("touchstart", jump);
+
+// RESET
+function restartGame() {
+  score = 0;
+  player.y = 300;
+  obstacle.x = 800;
+  speed = 5;
+  gameRunning = true;
+  gameOverScreen.classList.add("hidden");
+  bgMusic.play().catch(()=>{});
+}
+
+// UPDATE LOOP
+function update() {
+  if (!gameRunning) return;
+
+  // Gravity
+  player.y += player.dy;
+  player.dy += gravity;
+  if (player.y > 300) { player.y = 300; player.jumping = false; }
+
+  // Difficulty: SPEED INCREASE
+  speed += difficultyIncrease;  // makes game harder over time
+
+  // Move obstacle
+  obstacle.x -= speed;
+
+  // Respawn + scoring
+  if (obstacle.x < -40) {
+    obstacle.x = 800;
+    score++;
+    scoreSound.play();
+  }
+
+  // Collision
+  if (
+    player.x < obstacle.x + obstacle.w &&
+    player.x + player.w > obstacle.x &&
+    player.y < obstacle.y + obstacle.h &&
+    player.y + player.h > obstacle.y
+  ) {
+    hitSound.play();
+    gameRunning = false;
+    bgMusic.pause(); // stop music on death
+
+    if (score > highScore) {
+      highScore = score;
+      localStorage.setItem("highscore", highScore);
+    }
+
+    finalScoreText.textContent = `Score: ${score} · High Score: ${highScore}`;
+    gameOverScreen.classList.remove("hidden");
+  }
+}
+
+// DRAW LOOP
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(playerImg, player.x, player.y, player.w, player.h);
+  ctx.drawImage(obstacleImg, obstacle.x, obstacle.y, obstacle.w, obstacle.h);
+
+  ctx.fillStyle = "white";
+  ctx.font = "30px Arial";
+
+  ctx.fillText("Score: " + score, 20, 40);
+}
+
+// GAME LOOP
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+
+</body>
+</html>

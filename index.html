@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Runner Game — Home</title>
+<style>
+  body {
+    margin:0;
+    background:#811;
+    color:#fff;
+    font-family:system-ui, sans-serif;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+    text-align:center;
+  }
+
+  h1 {
+    font-size:38px;
+    margin-bottom:10px;
+  }
+
+  button {
+    width:200px;
+    padding:14px;
+    margin:12px 0;
+    font-size:18px;
+    border:none;
+    border-radius:8px;
+    background:#ff0066;
+    color:white;
+  }
+
+  button:active {
+    transform:scale(0.96);
+  }
+</style>
+</head>
+<body>
+
+<h1>🏃 Runner Game</h1>
+<p>Welcome! Tap Play to begin.</p>
+
+<button onclick="startGame()">▶️ Play Game</button>
+<button onclick="toggleMusic()">🔊 Toggle Music</button>
+<button onclick="alert('Made by Harkohway™ . Hope you enjoy')">👤 Credits</button>
+<button onclick="adventure()">Adventure</button>
+
+
+<!-- background music -->
+<audio id="bg" src="background.mp3" loop preload="auto"></audio>
+
+<script>
+const bg = document.getElementById("bg");
+
+// start game
+function startGame(){
+  window.location.href = "game.html"; // rename your game file as game.html
+}
+
+// adventure 
+function adventure(){
+  window.location.href = "adv.html";
+}
+
+// music toggle
+function toggleMusic(){
+  if(bg.paused){
+    bg.play().catch(()=>{});
+  } else {
+    bg.pause();
+  }
+}
+</script>
+
+</body>
+</html>
